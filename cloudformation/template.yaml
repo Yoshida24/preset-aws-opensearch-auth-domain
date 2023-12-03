@@ -1,0 +1,116 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: OpenSearch Dashboard with Login system.
+
+Parameters:
+  OpenSearchDomain:
+    Description: User-defined OpenSearch domain name (e.g. dashboard-dev)
+    Type: String
+  CustomDomain:
+    Type: String
+    Description: e.g. dev2.ebipnc.be
+  HostedZoneId:
+    Type: String
+    Description: HostedZoneId from Route53 e.g. Z3XXXXXXXXX (check by aws route53 list-hosted-zones)
+  MasterUserName:
+    Description: Master user Name for login Dashboard (The master user name must be 1-16 characters long. e.g. username)
+    Type: String
+  MasterUserPassword:
+    Description: Master user password for login Dashboard (Must be at least 8 characters long and contain one uppercase letter, one lowercase letter, one number, and one special character. e.g. Password01!)
+    Type: String
+  AllowAddresses:
+    Description: IP Addresses allowed to access dashboard.(e.g. 192.168.10.1/32,192.168.10.2/32)
+    Type: CommaDelimitedList
+    Default: 255.255.255.255/0
+
+Resources:
+  KmsKeyForEncryptionAtRest:
+    Type: 'AWS::KMS::Key'
+    Properties:
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: !Sub ${AWS::StackName}KmsKeyForEncryptionAtRest
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Join 
+                - ''
+                - - 'arn:aws:iam::'
+                  - !Ref 'AWS::AccountId'
+                  - ':root'
+            Action: 'kms:*'
+            Resource: '*'
+  OpenSearchServiceDomain:
+    Type: 'AWS::OpenSearchService::Domain'
+    DependsOn: 
+      - KmsKeyForEncryptionAtRest
+      - Certificate
+    Properties:
+      DomainName: !Ref OpenSearchDomain
+      EngineVersion: 'OpenSearch_2.5'
+      ClusterConfig:
+        InstanceCount: '1'
+        InstanceType: 't3.small.search'
+      EBSOptions:
+        EBSEnabled: true
+        VolumeSize: '10'
+        VolumeType: 'gp3'
+      DomainEndpointOptions:
+        CustomEndpoint: !Ref CustomDomain
+        CustomEndpointCertificateArn: !Ref Certificate
+        CustomEndpointEnabled: true
+        EnforceHTTPS: true
+      EncryptionAtRestOptions:
+        Enabled: true
+        KmsKeyId: !GetAtt KmsKeyForEncryptionAtRest.Arn
+      NodeToNodeEncryptionOptions: 
+        Enabled: true
+      AdvancedSecurityOptions:
+        Enabled: true
+        InternalUserDatabaseEnabled: true
+        MasterUserOptions:
+          MasterUserName: 
+            Ref: MasterUserName
+          MasterUserPassword: 
+            Ref: MasterUserPassword
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+          -
+            Effect: 'Allow'
+            Principal:
+              AWS: '*'
+            Action: 'es:*'
+            Resource: '*'
+            Condition: 
+              IpAddress: 
+                aws:SourceIp: !Ref AllowAddresses
+      AdvancedOptions:
+        rest.action.multi.allow_explicit_index: true
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref CustomDomain
+      DomainValidationOptions:
+        - DomainName: !Ref CustomDomain
+          HostedZoneId: !Ref HostedZoneId
+      ValidationMethod: DNS
+  DNSRecord:
+    Type: AWS::Route53::RecordSet
+    DependsOn: OpenSearchServiceDomain
+    Properties:
+      HostedZoneId : !Ref HostedZoneId
+      Name: !Ref CustomDomain
+      ResourceRecords: 
+        - !GetAtt OpenSearchServiceDomain.DomainEndpoint
+      TTL: 300
+      Type: CNAME
+    
+
+Outputs:
+  DomainEndpoint:
+    Value: !Ref CustomDomain
+  DashboardURL:
+    Value: !Sub https://${CustomDomain}/_dashboards
+  OpenSearchDomainArn:
+    Value: !GetAtt OpenSearchServiceDomain.Arn
